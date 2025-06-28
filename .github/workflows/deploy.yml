@@ -27,6 +27,8 @@ jobs:
       - name: Build
         run: |
           npm run build
+          # Ensure vite.svg is copied to the dist directory
+          cp public/vite.svg dist/
 
       - name: Deploy to GitHub Pages
         uses: JamesIves/github-pages-deploy-action@v4
