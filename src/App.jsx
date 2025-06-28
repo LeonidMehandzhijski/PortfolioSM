@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
 // --- Constants & Configuration ---
 const COLORS = {
@@ -54,6 +52,96 @@ const CONTENT = {
 // --- Helper Functions ---
 const lerp = (start, end, alpha) => (1 - alpha) * start + alpha * end;
 
+// Basic OrbitControls implementation
+class SimpleOrbitControls {
+    constructor(camera, domElement) {
+        this.camera = camera;
+        this.domElement = domElement;
+        this.enableDamping = true;
+        this.dampingFactor = 0.05;
+        this.enablePan = false;
+        this.enableZoom = false;
+        this.minDistance = 8;
+        this.maxDistance = 25;
+        
+        this.spherical = new THREE.Spherical();
+        this.sphericalDelta = new THREE.Spherical();
+        
+        this.target = new THREE.Vector3();
+        this.offset = new THREE.Vector3();
+        
+        this.rotateSpeed = 1.0;
+        this.isMouseDown = false;
+        this.mouseButtons = { LEFT: THREE.MOUSE.ROTATE };
+        
+        this.lastMousePosition = { x: 0, y: 0 };
+        
+        this.handleMouseDown = (event) => {
+            if (event.button === 0) { // left click
+                this.isMouseDown = true;
+                this.lastMousePosition.x = event.clientX;
+                this.lastMousePosition.y = event.clientY;
+            }
+        };
+        
+        this.handleMouseMove = (event) => {
+            if (!this.isMouseDown) return;
+            
+            const deltaX = event.clientX - this.lastMousePosition.x;
+            const deltaY = event.clientY - this.lastMousePosition.y;
+            
+            this.sphericalDelta.theta -= 2 * Math.PI * deltaX / this.domElement.clientHeight * this.rotateSpeed;
+            this.sphericalDelta.phi -= 2 * Math.PI * deltaY / this.domElement.clientHeight * this.rotateSpeed;
+            
+            this.lastMousePosition.x = event.clientX;
+            this.lastMousePosition.y = event.clientY;
+        };
+        
+        this.handleMouseUp = () => {
+            this.isMouseDown = false;
+        };
+        
+        this.domElement.addEventListener('mousedown', this.handleMouseDown);
+        this.domElement.addEventListener('mousemove', this.handleMouseMove);
+        this.domElement.addEventListener('mouseup', this.handleMouseUp);
+        this.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
+        
+        // Initialize camera position
+        this.offset.copy(this.camera.position).sub(this.target);
+        this.spherical.setFromVector3(this.offset);
+    }
+    
+    update() {
+        this.offset.copy(this.camera.position).sub(this.target);
+        this.spherical.setFromVector3(this.offset);
+        
+        this.spherical.theta += this.sphericalDelta.theta;
+        this.spherical.phi += this.sphericalDelta.phi;
+        
+        this.spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, this.spherical.phi));
+        this.spherical.radius = Math.max(this.minDistance, Math.min(this.maxDistance, this.spherical.radius));
+        
+        this.offset.setFromSpherical(this.spherical);
+        this.camera.position.copy(this.target).add(this.offset);
+        this.camera.lookAt(this.target);
+        
+        if (this.enableDamping) {
+            this.sphericalDelta.theta *= (1 - this.dampingFactor);
+            this.sphericalDelta.phi *= (1 - this.dampingFactor);
+        } else {
+            this.sphericalDelta.set(0, 0, 0);
+        }
+        
+        return false;
+    }
+    
+    dispose() {
+        this.domElement.removeEventListener('mousedown', this.handleMouseDown);
+        this.domElement.removeEventListener('mousemove', this.handleMouseMove);
+        this.domElement.removeEventListener('mouseup', this.handleMouseUp);
+    }
+}
+
 // --- React Components ---
 const ThreeScene = ({ setActivePage }) => {
     const mountRef = useRef(null);
@@ -76,20 +164,8 @@ const ThreeScene = ({ setActivePage }) => {
         renderer.setPixelRatio(window.devicePixelRatio);
         renderer.localClippingEnabled = true;
         mountNode.appendChild(renderer.domElement);
-        
-        const labelRenderer = new CSS2DRenderer();
-        labelRenderer.setSize(mountNode.clientWidth, mountNode.clientHeight);
-        labelRenderer.domElement.style.position = 'absolute';
-        labelRenderer.domElement.style.top = '0px';
-        labelRenderer.domElement.style.pointerEvents = 'none';
-        mountNode.appendChild(labelRenderer.domElement);
 
-        const controls = new OrbitControls(camera, renderer.domElement);
-        controls.enableDamping = true;
-        controls.enablePan = false;
-        controls.enableZoom = false;
-        controls.minDistance = 8;
-        controls.maxDistance = 25;
+        const controls = new SimpleOrbitControls(camera, renderer.domElement);
 
         scene.add(new THREE.AmbientLight(0xffffff, 0.5));
         const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
@@ -133,30 +209,12 @@ const ThreeScene = ({ setActivePage }) => {
             const ring = new THREE.Mesh(ringGeom, ringMat);
             ring.userData = { layerIndex: i };
             interactionGroupRef.current.add(ring);
-            
-            const labelDiv = document.createElement('div');
-            labelDiv.className = 'label';
-            labelDiv.textContent = layer.name;
-            labelDiv.style.color = '#FFFFFF';
-            labelDiv.style.textShadow = `0 0 8px ${layer.color.getStyle()}`;
-            labelDiv.style.opacity = '0';
-            labelDiv.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
-            labelDiv.style.transformOrigin = 'center';
-            
-            const label = new CSS2DObject(labelDiv);
-            
-            const labelAnchor = new THREE.Object3D();
-            const labelRadius = sphereRadius - (radiusStep / 2);
-            labelAnchor.position.set(0, 0, labelRadius);
-            sphere.add(labelAnchor);
-            labelAnchor.add(label);
         });
 
         const handleResize = () => {
             camera.aspect = mountNode.clientWidth / mountNode.clientHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(mountNode.clientWidth, mountNode.clientHeight);
-            labelRenderer.setSize(mountNode.clientWidth, mountNode.clientHeight);
         };
 
         const handleMouseMove = (event) => {
@@ -164,15 +222,11 @@ const ThreeScene = ({ setActivePage }) => {
             mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
             mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
             
-            const tempInteractionGroup = new THREE.Group();
-            tempInteractionGroup.children = interactionGroupRef.current.children;
-            tempInteractionGroup.quaternion.copy(camera.quaternion);
-
             raycaster.setFromCamera(mouse, camera);
-            const intersects = raycaster.intersectObjects(tempInteractionGroup.children);
+            const intersects = raycaster.intersectObjects(sphereGroupRef.current.children);
 
             if (intersects.length > 0) {
-                 hoveredLayerIndexRef.current = intersects[0].object.userData.layerIndex;
+                hoveredLayerIndexRef.current = intersects[0].object.userData.layerIndex;
             } else {
                 hoveredLayerIndexRef.current = null;
             }
@@ -203,36 +257,26 @@ const ThreeScene = ({ setActivePage }) => {
                     sphere.scale.x = lerp(sphere.scale.x, targetScale, 0.1);
                     sphere.scale.y = lerp(sphere.scale.y, targetScale, 0.1);
                     sphere.scale.z = lerp(sphere.scale.z, targetScale, 0.1);
-
-                    const labelAnchor = sphere.children[0];
-                    if (labelAnchor && labelAnchor.children[0]) {
-                        const label = labelAnchor.children[0];
-                        const targetLabelScale = isHovered ? 1 : 0.8;
-                        const currentScale = label.element.style.transform ? parseFloat(label.element.style.transform.replace('scale(','').replace(')','')) : 1;
-                        label.element.style.opacity = lerp(parseFloat(label.element.style.opacity), isHovered ? 1 : 0, 0.2);
-                        label.element.style.transform = `scale(${lerp(currentScale, targetLabelScale, 0.2)})`;
-                    }
                 });
             }
             
             renderer.render(scene, camera);
-            labelRenderer.render(scene, camera);
         };
         animate();
 
         return () => {
             cancelAnimationFrame(animationFrameId);
+            controls.dispose();
             window.removeEventListener('resize', handleResize);
             if (mountNode) {
                 mountNode.removeEventListener('mousemove', handleMouseMove);
                 mountNode.removeEventListener('click', handleClick);
                 if (renderer.domElement) mountNode.removeChild(renderer.domElement);
-                if (labelRenderer.domElement) mountNode.removeChild(labelRenderer.domElement);
             }
         };
     }, [setActivePage, mouse, raycaster]);
 
-    return <div ref={mountRef} className="absolute top-0 left-0 w-full h-full" />;
+    return <div ref={mountRef} className="absolute top-0 left-0 w-full h-full cursor-grab active:cursor-grabbing" />;
 };
 
 export default function App() {
@@ -243,7 +287,11 @@ export default function App() {
         return (
             <div key={activePage} className="w-full max-w-3xl mx-auto animate-fadeIn">
                 <h1 className="text-4xl md:text-5xl font-bold text-white mb-2">{contentData.title}</h1>
-                <p className="text-lg md:text-xl text-gray-300 mb-6">{contentData.subtitle || contentData.description}</p>
+                {contentData.subtitle && (
+                    <h2 className="text-xl md:text-2xl text-gray-400 mb-4">{contentData.subtitle}</h2>
+                )}
+                <p className="text-lg md:text-xl text-gray-300 mb-6">{contentData.description}</p>
+                
                 {activePage === 'Projects' && contentData.items.map((item, index) => (
                     <div key={index} className="mb-4 p-4 border-l-2 border-pink-500 bg-gray-800/30 rounded-r-lg">
                         <h3 className="font-semibold text-white">{item.name}</h3>
@@ -268,19 +316,10 @@ export default function App() {
     }
     
     return (
-        <div className="font-sans bg-gray-900 min-h-screen text-white flex flex-col items-center relative overflow-x-hidden">
+        <div className="font-sans bg-gray-900 min-h-screen text-white flex flex-col items-center relative overflow-hidden">
             <style>{`
               @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
               .font-sans { font-family: 'Inter', sans-serif; }
-              .label {
-                font-family: 'Inter', sans-serif;
-                font-weight: 700;
-                font-size: 20px;
-                background: rgba(0,0,0,0.4);
-                padding: 4px 10px;
-                border-radius: 5px;
-                pointer-events: none;
-              }
               @keyframes fadeIn {
                 from { opacity: 0; transform: translateY(20px); }
                 to { opacity: 1; transform: translateY(0); }
@@ -288,8 +327,26 @@ export default function App() {
               .animate-fadeIn { animation: fadeIn 0.5s ease-out forwards; }
             `}</style>
             
-            <div className="relative w-full h-[50vh] flex-shrink-0 cursor-grab active:cursor-grabbing">
+            <div className="relative w-full h-[50vh] flex-shrink-0">
                 <ThreeScene setActivePage={setActivePage} />
+                
+                {/* Layer labels */}
+                <div className="absolute top-4 left-4 z-10 text-white">
+                    <div className="text-sm opacity-70">Hover over layers to explore</div>
+                    {COLORS.layers.map((layer, index) => (
+                        <div 
+                            key={index} 
+                            className="flex items-center gap-2 text-xs mt-1 cursor-pointer hover:opacity-100 opacity-60 transition-opacity"
+                            onClick={() => setActivePage(layer.name)}
+                        >
+                            <div 
+                                className="w-3 h-3 rounded-full" 
+                                style={{ backgroundColor: layer.color.getStyle() }}
+                            ></div>
+                            <span>{layer.name}</span>
+                        </div>
+                    ))}
+                </div>
             </div>
 
             <div className="relative z-10 w-full flex-grow flex items-start justify-center p-8">
