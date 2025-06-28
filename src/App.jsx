@@ -58,7 +58,7 @@ class SimpleOrbitControls {
         this.camera = camera;
         this.domElement = domElement;
         this.enableDamping = true;
-        this.dampingFactor = 0.12; // Even more damping for slower movement
+        this.dampingFactor = 0.08; // More damping for even slower movement
         this.enablePan = false;
         this.enableZoom = false;
         this.minDistance = 8;
@@ -70,7 +70,7 @@ class SimpleOrbitControls {
         this.target = new THREE.Vector3();
         this.offset = new THREE.Vector3();
         
-        this.rotateSpeed = 0.3; // Even slower rotate speed
+        this.rotateSpeed = 0.2; // Reduced from 0.3 to 0.2 - slower rotation
         this.isMouseDown = false;
         this.isTouchDown = false;
         this.mouseButtons = { LEFT: THREE.MOUSE.ROTATE };
@@ -187,7 +187,6 @@ const ThreeScene = ({ setActivePage }) => {
     const raycaster = useMemo(() => new THREE.Raycaster(), []);
     const mouse = useMemo(() => new THREE.Vector2(), []);
     const sphereGroupRef = useRef(null);
-    const invisibleSpheresRef = useRef(null); // For click detection
 
     useEffect(() => {
         const mountNode = mountRef.current;
@@ -205,8 +204,8 @@ const ThreeScene = ({ setActivePage }) => {
 
         const controls = new SimpleOrbitControls(camera, renderer.domElement);
 
-        scene.add(new THREE.AmbientLight(0xffffff, 0.5));
-        const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+        scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
         dirLight.position.set(5, 10, 7.5);
         scene.add(dirLight);
 
@@ -219,44 +218,34 @@ const ThreeScene = ({ setActivePage }) => {
         sphereGroupRef.current = new THREE.Group();
         scene.add(sphereGroupRef.current);
 
-        // Create invisible spheres for better click detection
-        invisibleSpheresRef.current = new THREE.Group();
-        scene.add(invisibleSpheresRef.current);
-
         const baseRadius = 3;
-        const radiusStep = 0.5;
+        const radiusStep = 0.4; // Reduced from 0.5 to make layers more distinct
 
-        // Create visible spheres and invisible interaction spheres
+        // Create spheres with improved materials and geometry
         COLORS.layers.forEach((layer, i) => {
             const sphereRadius = baseRadius - i * radiusStep;
             if (sphereRadius <= 0) return;
             
-            // Visible sphere
-            const geometry = new THREE.SphereGeometry(sphereRadius, 64, 64);
+            // Higher quality geometry for better interaction detection
+            const geometry = new THREE.SphereGeometry(sphereRadius, 128, 128);
             const material = new THREE.MeshStandardMaterial({
                 color: layer.color,
-                metalness: 0.1,
-                roughness: 0.6,
+                metalness: 0.2,
+                roughness: 0.4,
                 clippingPlanes: clippingPlanes,
                 clipIntersection: true,
                 side: THREE.DoubleSide,
                 transparent: true,
-                opacity: 0.85,
+                opacity: 0.8,
             });
+            
             const sphere = new THREE.Mesh(geometry, material);
-            sphere.userData = { layerIndex: i, layerName: layer.name };
+            sphere.userData = { 
+                layerIndex: i, 
+                layerName: layer.name,
+                originalRadius: sphereRadius 
+            };
             sphereGroupRef.current.add(sphere);
-
-            // Invisible sphere for interaction (slightly larger for easier clicking)
-            const interactionRadius = sphereRadius + 0.1;
-            const invisibleGeometry = new THREE.SphereGeometry(interactionRadius, 32, 32);
-            const invisibleMaterial = new THREE.MeshBasicMaterial({ 
-                visible: false,
-                side: THREE.DoubleSide
-            });
-            const invisibleSphere = new THREE.Mesh(invisibleGeometry, invisibleMaterial);
-            invisibleSphere.userData = { layerIndex: i, layerName: layer.name };
-            invisibleSpheresRef.current.add(invisibleSphere);
         });
 
         const handleResize = () => {
@@ -290,35 +279,57 @@ const ThreeScene = ({ setActivePage }) => {
             
             raycaster.setFromCamera(mouse, camera);
             
-            // Check intersections with invisible spheres for better detection
-            const intersects = raycaster.intersectObjects(invisibleSpheresRef.current.children);
+            // Get all intersections and sort by distance
+            const intersects = raycaster.intersectObjects(sphereGroupRef.current.children);
             
             if (intersects.length > 0) {
-                // Find the closest intersection
-                const closestIntersect = intersects.reduce((closest, current) => {
-                    return current.distance < closest.distance ? current : closest;
-                });
+                // Find the closest visible intersection (accounting for the cut-away view)
+                let closestVisibleIntersect = null;
                 
-                hoveredLayerIndexRef.current = closestIntersect.object.userData.layerIndex;
+                for (const intersect of intersects) {
+                    const point = intersect.point;
+                    
+                    // Check if the intersection point is in the visible part (not clipped away)
+                    if (point.x >= 0 || point.y <= 0 || point.z <= 0) {
+                        closestVisibleIntersect = intersect;
+                        break;
+                    }
+                }
+                
+                if (closestVisibleIntersect) {
+                    hoveredLayerIndexRef.current = closestVisibleIntersect.object.userData.layerIndex;
+                } else {
+                    hoveredLayerIndexRef.current = null;
+                }
             } else {
                 hoveredLayerIndexRef.current = null;
             }
         };
 
         const handleClick = (event) => {
-            // Use the same raycasting logic for clicks
             const pointer = getPointerPosition(event);
             raycaster.setFromCamera({ x: pointer.x, y: pointer.y }, camera);
             
-            const intersects = raycaster.intersectObjects(invisibleSpheresRef.current.children);
+            const intersects = raycaster.intersectObjects(sphereGroupRef.current.children);
             
             if (intersects.length > 0) {
-                const closestIntersect = intersects.reduce((closest, current) => {
-                    return current.distance < closest.distance ? current : closest;
-                });
+                // Find the closest visible intersection for clicking
+                let closestVisibleIntersect = null;
                 
-                const pageName = COLORS.layers[closestIntersect.object.userData.layerIndex].name;
-                setActivePage(pageName);
+                for (const intersect of intersects) {
+                    const point = intersect.point;
+                    
+                    // Check if the intersection point is in the visible part
+                    if (point.x >= 0 || point.y <= 0 || point.z <= 0) {
+                        closestVisibleIntersect = intersect;
+                        break;
+                    }
+                }
+                
+                if (closestVisibleIntersect) {
+                    const pageName = COLORS.layers[closestVisibleIntersect.object.userData.layerIndex].name;
+                    setActivePage(pageName);
+                }
             }
         };
 
@@ -336,34 +347,26 @@ const ThreeScene = ({ setActivePage }) => {
             
             const hoveredIndex = hoveredLayerIndexRef.current;
 
-            // Animate all visible spheres
+            // Animate all spheres with improved effects
             if (sphereGroupRef.current && sphereGroupRef.current.children.length > 0) {
                 sphereGroupRef.current.children.forEach((sphere, i) => {
                     const isHovered = i === hoveredIndex;
-                    const targetScale = isHovered ? 1.2 : 1.0;
+                    const targetScale = isHovered ? 1.3 : 1.0; // Increased scale for better visibility
                     
                     // Smooth scaling animation
-                    sphere.scale.x = lerp(sphere.scale.x, targetScale, 0.15);
-                    sphere.scale.y = lerp(sphere.scale.y, targetScale, 0.15);
-                    sphere.scale.z = lerp(sphere.scale.z, targetScale, 0.15);
+                    sphere.scale.x = lerp(sphere.scale.x, targetScale, 0.12);
+                    sphere.scale.y = lerp(sphere.scale.y, targetScale, 0.12);
+                    sphere.scale.z = lerp(sphere.scale.z, targetScale, 0.12);
                     
-                    // Add glow effect for hovered layer
+                    // Enhanced visual effects
                     if (isHovered) {
-                        sphere.material.emissive.copy(sphere.material.color).multiplyScalar(0.15);
+                        sphere.material.emissive.copy(sphere.material.color).multiplyScalar(0.25);
                         sphere.material.opacity = 0.95;
+                        sphere.material.metalness = 0.4;
                     } else {
                         sphere.material.emissive.setHex(0x000000);
-                        sphere.material.opacity = 0.85;
-                    }
-                });
-            }
-
-            // Sync invisible spheres with visible ones for consistent interaction
-            if (invisibleSpheresRef.current && sphereGroupRef.current) {
-                invisibleSpheresRef.current.children.forEach((invisibleSphere, i) => {
-                    const visibleSphere = sphereGroupRef.current.children[i];
-                    if (visibleSphere) {
-                        invisibleSphere.scale.copy(visibleSphere.scale);
+                        sphere.material.opacity = 0.8;
+                        sphere.material.metalness = 0.2;
                     }
                 });
             }
@@ -395,28 +398,28 @@ export default function App() {
     const renderContent = () => {
         const contentData = CONTENT[activePage] || CONTENT.Home;
         return (
-            <div key={activePage} className="w-full max-w-3xl mx-auto animate-fadeIn px-4">
-                <h1 className="text-3xl md:text-4xl lg:text-5xl font-bold text-white mb-2">{contentData.title}</h1>
+            <div key={activePage} className="w-full max-w-4xl mx-auto animate-fadeIn px-4 sm:px-6 lg:px-8">
+                <h1 className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-bold text-white mb-2 leading-tight">{contentData.title}</h1>
                 {contentData.subtitle && (
-                    <h2 className="text-lg md:text-xl lg:text-2xl text-gray-400 mb-4">{contentData.subtitle}</h2>
+                    <h2 className="text-base sm:text-lg md:text-xl lg:text-2xl text-gray-400 mb-4">{contentData.subtitle}</h2>
                 )}
-                <p className="text-base md:text-lg lg:text-xl text-gray-300 mb-6">{contentData.description}</p>
+                <p className="text-sm sm:text-base md:text-lg lg:text-xl text-gray-300 mb-6 leading-relaxed">{contentData.description}</p>
                 
                 {activePage === 'Projects' && contentData.items.map((item, index) => (
-                    <div key={index} className="mb-4 p-4 border-l-2 border-pink-500 bg-gray-800/30 rounded-r-lg">
-                        <h3 className="font-semibold text-white text-sm md:text-base">{item.name}</h3>
-                        <p className="text-gray-400 text-sm md:text-base">{item.desc}</p>
+                    <div key={index} className="mb-4 p-3 sm:p-4 border-l-2 border-pink-500 bg-gray-800/30 rounded-r-lg">
+                        <h3 className="font-semibold text-white text-sm sm:text-base md:text-lg mb-1">{item.name}</h3>
+                        <p className="text-gray-400 text-xs sm:text-sm md:text-base leading-relaxed">{item.desc}</p>
                     </div>
                 ))}
                 {activePage === 'Skills' && (
-                    <div className="flex flex-wrap gap-2 md:gap-3">
+                    <div className="flex flex-wrap gap-2 sm:gap-3">
                         {contentData.items.map((item, index) => (
-                           <span key={index} className="bg-gray-700/50 text-gray-200 py-1 md:py-2 px-2 md:px-4 rounded-full text-xs md:text-sm">{item}</span>
+                           <span key={index} className="bg-gray-700/50 text-gray-200 py-1 sm:py-2 px-2 sm:px-3 md:px-4 rounded-full text-xs sm:text-sm transition-all hover:bg-gray-600/50">{item}</span>
                         ))}
                     </div>
                 )}
                  {activePage === 'Contact' && contentData.items.map((item, index) => (
-                    <div key={index} className="mb-2 text-sm md:text-base">
+                    <div key={index} className="mb-2 text-sm sm:text-base md:text-lg">
                         <span className="font-semibold text-white">{item.type}: </span>
                         <span className="text-gray-300">{item.value}</span>
                     </div>
@@ -434,43 +437,51 @@ export default function App() {
                 from { opacity: 0; transform: translateY(20px); }
                 to { opacity: 1; transform: translateY(0); }
               }
-              .animate-fadeIn { animation: fadeIn 0.5s ease-out forwards; }
+              .animate-fadeIn { animation: fadeIn 0.6s ease-out forwards; }
               .touch-none { touch-action: none; }
+              
+              /* Improved mobile scrolling */
+              @media (max-width: 768px) {
+                .touch-none { touch-action: pan-y; }
+              }
             `}</style>
             
-            <div className="relative w-full h-[40vh] md:h-[50vh] flex-shrink-0">
+            <div className="relative w-full h-[35vh] sm:h-[40vh] md:h-[50vh] flex-shrink-0">
                 <ThreeScene setActivePage={setActivePage} />
                 
-                {/* Layer labels - responsive positioning */}
-                <div className="absolute top-2 md:top-4 left-2 md:left-4 z-10 text-white">
-                    <div className="text-xs md:text-sm opacity-70 mb-1">Hover/Touch layers to explore</div>
+                {/* Enhanced layer labels with better mobile responsiveness */}
+                <div className="absolute top-2 sm:top-4 left-2 sm:left-4 z-10 text-white">
+                    <div className="text-xs sm:text-sm opacity-70 mb-1 sm:mb-2">
+                        <span className="hidden sm:inline">Hover/Touch layers to explore</span>
+                        <span className="sm:hidden">Touch layers to explore</span>
+                    </div>
                     {COLORS.layers.map((layer, index) => (
                         <div 
                             key={index} 
-                            className="flex items-center gap-1 md:gap-2 text-xs cursor-pointer hover:opacity-100 opacity-60 transition-opacity mb-1"
+                            className="flex items-center gap-1 sm:gap-2 text-xs sm:text-sm cursor-pointer hover:opacity-100 opacity-60 transition-all duration-200 mb-1 p-1 rounded hover:bg-gray-800/30"
                             onClick={() => setActivePage(layer.name)}
                         >
                             <div 
-                                className="w-2 h-2 md:w-3 md:h-3 rounded-full" 
+                                className="w-2 h-2 sm:w-3 sm:h-3 rounded-full shadow-sm" 
                                 style={{ backgroundColor: layer.color.getStyle() }}
                             ></div>
-                            <span className="text-xs md:text-sm">{layer.name}</span>
+                            <span className="font-medium">{layer.name}</span>
                         </div>
                     ))}
                 </div>
             </div>
 
-            <div className="relative z-10 w-full flex-grow flex items-start justify-center p-4 md:p-8">
+            <div className="relative z-10 w-full flex-grow flex items-start justify-center p-4 sm:p-6 md:p-8">
                <div className="w-full text-center">
                    {renderContent()}
                </div>
             </div>
             
             <div 
-                className="absolute top-4 md:top-8 right-4 md:right-8 z-20 cursor-pointer text-gray-400 hover:text-white transition-colors"
+                className="absolute top-3 sm:top-4 md:top-8 right-3 sm:right-4 md:right-8 z-20 cursor-pointer text-gray-400 hover:text-white transition-colors p-2 hover:bg-gray-800/30 rounded-full"
                 onClick={() => setActivePage('Home')}
             >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 md:h-8 md:w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 sm:h-6 sm:w-6 md:h-8 md:w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
                 </svg>
             </div>
