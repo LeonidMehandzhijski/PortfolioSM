@@ -52,13 +52,13 @@ const CONTENT = {
 // --- Helper Functions ---
 const lerp = (start, end, alpha) => (1 - alpha) * start + alpha * end;
 
-// Basic OrbitControls implementation
+// Enhanced OrbitControls with touch support and slower rotation
 class SimpleOrbitControls {
     constructor(camera, domElement) {
         this.camera = camera;
         this.domElement = domElement;
         this.enableDamping = true;
-        this.dampingFactor = 0.05;
+        this.dampingFactor = 0.08; // Increased damping for slower movement
         this.enablePan = false;
         this.enableZoom = false;
         this.minDistance = 8;
@@ -70,14 +70,17 @@ class SimpleOrbitControls {
         this.target = new THREE.Vector3();
         this.offset = new THREE.Vector3();
         
-        this.rotateSpeed = 1.0;
+        this.rotateSpeed = 0.5; // Reduced rotate speed
         this.isMouseDown = false;
+        this.isTouchDown = false;
         this.mouseButtons = { LEFT: THREE.MOUSE.ROTATE };
         
         this.lastMousePosition = { x: 0, y: 0 };
+        this.lastTouchPosition = { x: 0, y: 0 };
         
+        // Mouse events
         this.handleMouseDown = (event) => {
-            if (event.button === 0) { // left click
+            if (event.button === 0) {
                 this.isMouseDown = true;
                 this.lastMousePosition.x = event.clientX;
                 this.lastMousePosition.y = event.clientY;
@@ -100,10 +103,42 @@ class SimpleOrbitControls {
         this.handleMouseUp = () => {
             this.isMouseDown = false;
         };
+
+        // Touch events for mobile
+        this.handleTouchStart = (event) => {
+            if (event.touches.length === 1) {
+                this.isTouchDown = true;
+                this.lastTouchPosition.x = event.touches[0].clientX;
+                this.lastTouchPosition.y = event.touches[0].clientY;
+            }
+        };
+
+        this.handleTouchMove = (event) => {
+            if (!this.isTouchDown || event.touches.length !== 1) return;
+            
+            event.preventDefault(); // Prevent scrolling
+            
+            const deltaX = event.touches[0].clientX - this.lastTouchPosition.x;
+            const deltaY = event.touches[0].clientY - this.lastTouchPosition.y;
+            
+            this.sphericalDelta.theta -= 2 * Math.PI * deltaX / this.domElement.clientHeight * this.rotateSpeed;
+            this.sphericalDelta.phi -= 2 * Math.PI * deltaY / this.domElement.clientHeight * this.rotateSpeed;
+            
+            this.lastTouchPosition.x = event.touches[0].clientX;
+            this.lastTouchPosition.y = event.touches[0].clientY;
+        };
+
+        this.handleTouchEnd = () => {
+            this.isTouchDown = false;
+        };
         
+        // Add event listeners
         this.domElement.addEventListener('mousedown', this.handleMouseDown);
         this.domElement.addEventListener('mousemove', this.handleMouseMove);
         this.domElement.addEventListener('mouseup', this.handleMouseUp);
+        this.domElement.addEventListener('touchstart', this.handleTouchStart, { passive: false });
+        this.domElement.addEventListener('touchmove', this.handleTouchMove, { passive: false });
+        this.domElement.addEventListener('touchend', this.handleTouchEnd);
         this.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
         
         // Initialize camera position
@@ -139,6 +174,9 @@ class SimpleOrbitControls {
         this.domElement.removeEventListener('mousedown', this.handleMouseDown);
         this.domElement.removeEventListener('mousemove', this.handleMouseMove);
         this.domElement.removeEventListener('mouseup', this.handleMouseUp);
+        this.domElement.removeEventListener('touchstart', this.handleTouchStart);
+        this.domElement.removeEventListener('touchmove', this.handleTouchMove);
+        this.domElement.removeEventListener('touchend', this.handleTouchEnd);
     }
 }
 
@@ -149,7 +187,7 @@ const ThreeScene = ({ setActivePage }) => {
     const raycaster = useMemo(() => new THREE.Raycaster(), []);
     const mouse = useMemo(() => new THREE.Vector2(), []);
     const sphereGroupRef = useRef(null);
-    const interactionGroupRef = useRef(null); 
+    const scaleTargetsRef = useRef([]);
 
     useEffect(() => {
         const mountNode = mountRef.current;
@@ -180,12 +218,11 @@ const ThreeScene = ({ setActivePage }) => {
 
         sphereGroupRef.current = new THREE.Group();
         scene.add(sphereGroupRef.current);
-        interactionGroupRef.current = new THREE.Group();
-        scene.add(interactionGroupRef.current);
 
         const baseRadius = 3;
         const radiusStep = 0.5;
 
+        // Create spheres with proper layering for click detection
         COLORS.layers.forEach((layer, i) => {
             const sphereRadius = baseRadius - i * radiusStep;
             if (sphereRadius <= 0) return;
@@ -197,18 +234,16 @@ const ThreeScene = ({ setActivePage }) => {
                 roughness: 0.6,
                 clippingPlanes: clippingPlanes,
                 clipIntersection: true,
-                side: THREE.DoubleSide, 
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.9,
             });
             const sphere = new THREE.Mesh(geometry, material);
-            sphere.userData = { layerIndex: i };
+            sphere.userData = { layerIndex: i, layerName: layer.name };
             sphereGroupRef.current.add(sphere);
-
-            const innerR = sphereRadius - radiusStep;
-            const ringGeom = new THREE.RingGeometry(innerR < 0 ? 0 : innerR, sphereRadius, 64, 1);
-            const ringMat = new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide });
-            const ring = new THREE.Mesh(ringGeom, ringMat);
-            ring.userData = { layerIndex: i };
-            interactionGroupRef.current.add(ring);
+            
+            // Initialize scale targets
+            scaleTargetsRef.current[i] = 1.0;
         });
 
         const handleResize = () => {
@@ -217,46 +252,94 @@ const ThreeScene = ({ setActivePage }) => {
             renderer.setSize(mountNode.clientWidth, mountNode.clientHeight);
         };
 
-        const handleMouseMove = (event) => {
+        const getPointerPosition = (event) => {
             const rect = mountNode.getBoundingClientRect();
-            mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-            mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+            let clientX, clientY;
+            
+            if (event.touches && event.touches.length > 0) {
+                clientX = event.touches[0].clientX;
+                clientY = event.touches[0].clientY;
+            } else {
+                clientX = event.clientX;
+                clientY = event.clientY;
+            }
+            
+            return {
+                x: ((clientX - rect.left) / rect.width) * 2 - 1,
+                y: -((clientY - rect.top) / rect.height) * 2 + 1
+            };
+        };
+
+        const handlePointerMove = (event) => {
+            const pointer = getPointerPosition(event);
+            mouse.x = pointer.x;
+            mouse.y = pointer.y;
             
             raycaster.setFromCamera(mouse, camera);
+            
+            // Get all intersections and find the closest visible layer
             const intersects = raycaster.intersectObjects(sphereGroupRef.current.children);
-
-            if (intersects.length > 0) {
-                hoveredLayerIndexRef.current = intersects[0].object.userData.layerIndex;
-            } else {
-                hoveredLayerIndexRef.current = null;
+            
+            let closestVisibleLayer = null;
+            let closestDistance = Infinity;
+            
+            for (const intersect of intersects) {
+                const layerIndex = intersect.object.userData.layerIndex;
+                const distance = intersect.distance;
+                
+                // Check if this layer is visible at the intersection point
+                if (distance < closestDistance) {
+                    closestDistance = distance;
+                    closestVisibleLayer = layerIndex;
+                }
+            }
+            
+            hoveredLayerIndexRef.current = closestVisibleLayer;
+            
+            // Update scale targets for all layers
+            for (let i = 0; i < COLORS.layers.length; i++) {
+                if (i === closestVisibleLayer) {
+                    scaleTargetsRef.current[i] = 1.15; // Slightly less dramatic scaling
+                } else {
+                    scaleTargetsRef.current[i] = 1.0;
+                }
             }
         };
 
-        const handleClick = () => {
-             if (hoveredLayerIndexRef.current !== null) {
-                 const pageName = COLORS.layers[hoveredLayerIndexRef.current].name;
-                 setActivePage(pageName);
-             }
+        const handleClick = (event) => {
+            if (hoveredLayerIndexRef.current !== null) {
+                const pageName = COLORS.layers[hoveredLayerIndexRef.current].name;
+                setActivePage(pageName);
+            }
         };
 
+        // Add both mouse and touch event listeners
         window.addEventListener('resize', handleResize);
-        mountNode.addEventListener('mousemove', handleMouseMove);
+        mountNode.addEventListener('mousemove', handlePointerMove);
+        mountNode.addEventListener('touchmove', handlePointerMove, { passive: true });
         mountNode.addEventListener('click', handleClick);
+        mountNode.addEventListener('touchend', handleClick);
 
         let animationFrameId;
         const animate = () => {
             animationFrameId = requestAnimationFrame(animate);
             controls.update();
             
-            const hoveredIndex = hoveredLayerIndexRef.current;
-
+            // Smooth scaling animation for all spheres
             if (sphereGroupRef.current && sphereGroupRef.current.children.length > 0) {
                 sphereGroupRef.current.children.forEach((sphere, i) => {
-                    const isHovered = i === hoveredIndex;
-                    const targetScale = isHovered ? 1.2 : 1.0;
-                    sphere.scale.x = lerp(sphere.scale.x, targetScale, 0.1);
-                    sphere.scale.y = lerp(sphere.scale.y, targetScale, 0.1);
-                    sphere.scale.z = lerp(sphere.scale.z, targetScale, 0.1);
+                    const targetScale = scaleTargetsRef.current[i] || 1.0;
+                    const currentScale = sphere.scale.x;
+                    const newScale = lerp(currentScale, targetScale, 0.1);
+                    
+                    sphere.scale.set(newScale, newScale, newScale);
+                    
+                    // Add subtle glow effect for hovered layer
+                    if (i === hoveredLayerIndexRef.current) {
+                        sphere.material.emissive.copy(sphere.material.color).multiplyScalar(0.1);
+                    } else {
+                        sphere.material.emissive.setHex(0x000000);
+                    }
                 });
             }
             
@@ -269,14 +352,16 @@ const ThreeScene = ({ setActivePage }) => {
             controls.dispose();
             window.removeEventListener('resize', handleResize);
             if (mountNode) {
-                mountNode.removeEventListener('mousemove', handleMouseMove);
+                mountNode.removeEventListener('mousemove', handlePointerMove);
+                mountNode.removeEventListener('touchmove', handlePointerMove);
                 mountNode.removeEventListener('click', handleClick);
+                mountNode.removeEventListener('touchend', handleClick);
                 if (renderer.domElement) mountNode.removeChild(renderer.domElement);
             }
         };
     }, [setActivePage, mouse, raycaster]);
 
-    return <div ref={mountRef} className="absolute top-0 left-0 w-full h-full cursor-grab active:cursor-grabbing" />;
+    return <div ref={mountRef} className="absolute top-0 left-0 w-full h-full cursor-grab active:cursor-grabbing touch-none" />;
 };
 
 export default function App() {
@@ -285,28 +370,28 @@ export default function App() {
     const renderContent = () => {
         const contentData = CONTENT[activePage] || CONTENT.Home;
         return (
-            <div key={activePage} className="w-full max-w-3xl mx-auto animate-fadeIn">
-                <h1 className="text-4xl md:text-5xl font-bold text-white mb-2">{contentData.title}</h1>
+            <div key={activePage} className="w-full max-w-3xl mx-auto animate-fadeIn px-4">
+                <h1 className="text-3xl md:text-4xl lg:text-5xl font-bold text-white mb-2">{contentData.title}</h1>
                 {contentData.subtitle && (
-                    <h2 className="text-xl md:text-2xl text-gray-400 mb-4">{contentData.subtitle}</h2>
+                    <h2 className="text-lg md:text-xl lg:text-2xl text-gray-400 mb-4">{contentData.subtitle}</h2>
                 )}
-                <p className="text-lg md:text-xl text-gray-300 mb-6">{contentData.description}</p>
+                <p className="text-base md:text-lg lg:text-xl text-gray-300 mb-6">{contentData.description}</p>
                 
                 {activePage === 'Projects' && contentData.items.map((item, index) => (
                     <div key={index} className="mb-4 p-4 border-l-2 border-pink-500 bg-gray-800/30 rounded-r-lg">
-                        <h3 className="font-semibold text-white">{item.name}</h3>
-                        <p className="text-gray-400">{item.desc}</p>
+                        <h3 className="font-semibold text-white text-sm md:text-base">{item.name}</h3>
+                        <p className="text-gray-400 text-sm md:text-base">{item.desc}</p>
                     </div>
                 ))}
                 {activePage === 'Skills' && (
-                    <div className="flex flex-wrap gap-3">
+                    <div className="flex flex-wrap gap-2 md:gap-3">
                         {contentData.items.map((item, index) => (
-                           <span key={index} className="bg-gray-700/50 text-gray-200 py-2 px-4 rounded-full text-sm">{item}</span>
+                           <span key={index} className="bg-gray-700/50 text-gray-200 py-1 md:py-2 px-2 md:px-4 rounded-full text-xs md:text-sm">{item}</span>
                         ))}
                     </div>
                 )}
                  {activePage === 'Contact' && contentData.items.map((item, index) => (
-                    <div key={index} className="mb-2">
+                    <div key={index} className="mb-2 text-sm md:text-base">
                         <span className="font-semibold text-white">{item.type}: </span>
                         <span className="text-gray-300">{item.value}</span>
                     </div>
@@ -325,41 +410,42 @@ export default function App() {
                 to { opacity: 1; transform: translateY(0); }
               }
               .animate-fadeIn { animation: fadeIn 0.5s ease-out forwards; }
+              .touch-none { touch-action: none; }
             `}</style>
             
-            <div className="relative w-full h-[50vh] flex-shrink-0">
+            <div className="relative w-full h-[40vh] md:h-[50vh] flex-shrink-0">
                 <ThreeScene setActivePage={setActivePage} />
                 
-                {/* Layer labels */}
-                <div className="absolute top-4 left-4 z-10 text-white">
-                    <div className="text-sm opacity-70">Hover over layers to explore</div>
+                {/* Layer labels - responsive positioning */}
+                <div className="absolute top-2 md:top-4 left-2 md:left-4 z-10 text-white">
+                    <div className="text-xs md:text-sm opacity-70 mb-1">Hover/Touch layers to explore</div>
                     {COLORS.layers.map((layer, index) => (
                         <div 
                             key={index} 
-                            className="flex items-center gap-2 text-xs mt-1 cursor-pointer hover:opacity-100 opacity-60 transition-opacity"
+                            className="flex items-center gap-1 md:gap-2 text-xs cursor-pointer hover:opacity-100 opacity-60 transition-opacity mb-1"
                             onClick={() => setActivePage(layer.name)}
                         >
                             <div 
-                                className="w-3 h-3 rounded-full" 
+                                className="w-2 h-2 md:w-3 md:h-3 rounded-full" 
                                 style={{ backgroundColor: layer.color.getStyle() }}
                             ></div>
-                            <span>{layer.name}</span>
+                            <span className="text-xs md:text-sm">{layer.name}</span>
                         </div>
                     ))}
                 </div>
             </div>
 
-            <div className="relative z-10 w-full flex-grow flex items-start justify-center p-8">
+            <div className="relative z-10 w-full flex-grow flex items-start justify-center p-4 md:p-8">
                <div className="w-full text-center">
                    {renderContent()}
                </div>
             </div>
             
             <div 
-                className="absolute top-8 right-8 z-20 cursor-pointer text-gray-400 hover:text-white transition-colors"
+                className="absolute top-4 md:top-8 right-4 md:right-8 z-20 cursor-pointer text-gray-400 hover:text-white transition-colors"
                 onClick={() => setActivePage('Home')}
             >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 md:h-8 md:w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
                 </svg>
             </div>
