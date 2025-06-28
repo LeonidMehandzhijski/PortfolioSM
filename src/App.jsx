@@ -219,7 +219,7 @@ const ThreeScene = ({ setActivePage }) => {
         scene.add(sphereGroupRef.current);
 
         const baseRadius = 3;
-        const radiusStep = 0.4; // Reduced from 0.5 to make layers more distinct
+        const radiusStep = 0.6; // Increased from 0.4 to 0.6 for better separation
 
         // Create spheres with improved materials and geometry
         COLORS.layers.forEach((layer, i) => {
@@ -347,11 +347,11 @@ const ThreeScene = ({ setActivePage }) => {
             
             const hoveredIndex = hoveredLayerIndexRef.current;
 
-            // Animate all spheres with improved effects
+            // Animate all spheres with reduced scale to prevent overlapping
             if (sphereGroupRef.current && sphereGroupRef.current.children.length > 0) {
                 sphereGroupRef.current.children.forEach((sphere, i) => {
                     const isHovered = i === hoveredIndex;
-                    const targetScale = isHovered ? 1.3 : 1.0; // Increased scale for better visibility
+                    const targetScale = isHovered ? 1.15 : 1.0; // Reduced from 1.3 to 1.15
                     
                     // Smooth scaling animation
                     sphere.scale.x = lerp(sphere.scale.x, targetScale, 0.12);
