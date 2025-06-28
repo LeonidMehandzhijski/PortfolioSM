@@ -58,7 +58,7 @@ class SimpleOrbitControls {
         this.camera = camera;
         this.domElement = domElement;
         this.enableDamping = true;
-        this.dampingFactor = 0.08; // Increased damping for slower movement
+        this.dampingFactor = 0.12; // Even more damping for slower movement
         this.enablePan = false;
         this.enableZoom = false;
         this.minDistance = 8;
@@ -70,7 +70,7 @@ class SimpleOrbitControls {
         this.target = new THREE.Vector3();
         this.offset = new THREE.Vector3();
         
-        this.rotateSpeed = 0.5; // Reduced rotate speed
+        this.rotateSpeed = 0.3; // Even slower rotate speed
         this.isMouseDown = false;
         this.isTouchDown = false;
         this.mouseButtons = { LEFT: THREE.MOUSE.ROTATE };
@@ -187,7 +187,7 @@ const ThreeScene = ({ setActivePage }) => {
     const raycaster = useMemo(() => new THREE.Raycaster(), []);
     const mouse = useMemo(() => new THREE.Vector2(), []);
     const sphereGroupRef = useRef(null);
-    const scaleTargetsRef = useRef([]);
+    const invisibleSpheresRef = useRef(null); // For click detection
 
     useEffect(() => {
         const mountNode = mountRef.current;
@@ -219,14 +219,19 @@ const ThreeScene = ({ setActivePage }) => {
         sphereGroupRef.current = new THREE.Group();
         scene.add(sphereGroupRef.current);
 
+        // Create invisible spheres for better click detection
+        invisibleSpheresRef.current = new THREE.Group();
+        scene.add(invisibleSpheresRef.current);
+
         const baseRadius = 3;
         const radiusStep = 0.5;
 
-        // Create spheres with proper layering for click detection
+        // Create visible spheres and invisible interaction spheres
         COLORS.layers.forEach((layer, i) => {
             const sphereRadius = baseRadius - i * radiusStep;
             if (sphereRadius <= 0) return;
             
+            // Visible sphere
             const geometry = new THREE.SphereGeometry(sphereRadius, 64, 64);
             const material = new THREE.MeshStandardMaterial({
                 color: layer.color,
@@ -236,14 +241,22 @@ const ThreeScene = ({ setActivePage }) => {
                 clipIntersection: true,
                 side: THREE.DoubleSide,
                 transparent: true,
-                opacity: 0.9,
+                opacity: 0.85,
             });
             const sphere = new THREE.Mesh(geometry, material);
             sphere.userData = { layerIndex: i, layerName: layer.name };
             sphereGroupRef.current.add(sphere);
-            
-            // Initialize scale targets
-            scaleTargetsRef.current[i] = 1.0;
+
+            // Invisible sphere for interaction (slightly larger for easier clicking)
+            const interactionRadius = sphereRadius + 0.1;
+            const invisibleGeometry = new THREE.SphereGeometry(interactionRadius, 32, 32);
+            const invisibleMaterial = new THREE.MeshBasicMaterial({ 
+                visible: false,
+                side: THREE.DoubleSide
+            });
+            const invisibleSphere = new THREE.Mesh(invisibleGeometry, invisibleMaterial);
+            invisibleSphere.userData = { layerIndex: i, layerName: layer.name };
+            invisibleSpheresRef.current.add(invisibleSphere);
         });
 
         const handleResize = () => {
@@ -277,38 +290,34 @@ const ThreeScene = ({ setActivePage }) => {
             
             raycaster.setFromCamera(mouse, camera);
             
-            // Get all intersections and find the closest visible layer
-            const intersects = raycaster.intersectObjects(sphereGroupRef.current.children);
+            // Check intersections with invisible spheres for better detection
+            const intersects = raycaster.intersectObjects(invisibleSpheresRef.current.children);
             
-            let closestVisibleLayer = null;
-            let closestDistance = Infinity;
-            
-            for (const intersect of intersects) {
-                const layerIndex = intersect.object.userData.layerIndex;
-                const distance = intersect.distance;
+            if (intersects.length > 0) {
+                // Find the closest intersection
+                const closestIntersect = intersects.reduce((closest, current) => {
+                    return current.distance < closest.distance ? current : closest;
+                });
                 
-                // Check if this layer is visible at the intersection point
-                if (distance < closestDistance) {
-                    closestDistance = distance;
-                    closestVisibleLayer = layerIndex;
-                }
-            }
-            
-            hoveredLayerIndexRef.current = closestVisibleLayer;
-            
-            // Update scale targets for all layers
-            for (let i = 0; i < COLORS.layers.length; i++) {
-                if (i === closestVisibleLayer) {
-                    scaleTargetsRef.current[i] = 1.15; // Slightly less dramatic scaling
-                } else {
-                    scaleTargetsRef.current[i] = 1.0;
-                }
+                hoveredLayerIndexRef.current = closestIntersect.object.userData.layerIndex;
+            } else {
+                hoveredLayerIndexRef.current = null;
             }
         };
 
         const handleClick = (event) => {
-            if (hoveredLayerIndexRef.current !== null) {
-                const pageName = COLORS.layers[hoveredLayerIndexRef.current].name;
+            // Use the same raycasting logic for clicks
+            const pointer = getPointerPosition(event);
+            raycaster.setFromCamera({ x: pointer.x, y: pointer.y }, camera);
+            
+            const intersects = raycaster.intersectObjects(invisibleSpheresRef.current.children);
+            
+            if (intersects.length > 0) {
+                const closestIntersect = intersects.reduce((closest, current) => {
+                    return current.distance < closest.distance ? current : closest;
+                });
+                
+                const pageName = COLORS.layers[closestIntersect.object.userData.layerIndex].name;
                 setActivePage(pageName);
             }
         };
@@ -325,20 +334,36 @@ const ThreeScene = ({ setActivePage }) => {
             animationFrameId = requestAnimationFrame(animate);
             controls.update();
             
-            // Smooth scaling animation for all spheres
+            const hoveredIndex = hoveredLayerIndexRef.current;
+
+            // Animate all visible spheres
             if (sphereGroupRef.current && sphereGroupRef.current.children.length > 0) {
                 sphereGroupRef.current.children.forEach((sphere, i) => {
-                    const targetScale = scaleTargetsRef.current[i] || 1.0;
-                    const currentScale = sphere.scale.x;
-                    const newScale = lerp(currentScale, targetScale, 0.1);
+                    const isHovered = i === hoveredIndex;
+                    const targetScale = isHovered ? 1.2 : 1.0;
                     
-                    sphere.scale.set(newScale, newScale, newScale);
+                    // Smooth scaling animation
+                    sphere.scale.x = lerp(sphere.scale.x, targetScale, 0.15);
+                    sphere.scale.y = lerp(sphere.scale.y, targetScale, 0.15);
+                    sphere.scale.z = lerp(sphere.scale.z, targetScale, 0.15);
                     
-                    // Add subtle glow effect for hovered layer
-                    if (i === hoveredLayerIndexRef.current) {
-                        sphere.material.emissive.copy(sphere.material.color).multiplyScalar(0.1);
+                    // Add glow effect for hovered layer
+                    if (isHovered) {
+                        sphere.material.emissive.copy(sphere.material.color).multiplyScalar(0.15);
+                        sphere.material.opacity = 0.95;
                     } else {
                         sphere.material.emissive.setHex(0x000000);
+                        sphere.material.opacity = 0.85;
+                    }
+                });
+            }
+
+            // Sync invisible spheres with visible ones for consistent interaction
+            if (invisibleSpheresRef.current && sphereGroupRef.current) {
+                invisibleSpheresRef.current.children.forEach((invisibleSphere, i) => {
+                    const visibleSphere = sphereGroupRef.current.children[i];
+                    if (visibleSphere) {
+                        invisibleSphere.scale.copy(visibleSphere.scale);
                     }
                 });
             }
