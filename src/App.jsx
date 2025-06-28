@@ -12,7 +12,7 @@ const COLORS = {
     { color: new THREE.Color('#8E3B66'), name: 'Projects' },
     { color: new THREE.Color('#532F4C'), name: 'About' },
     { color: new THREE.Color('#333333'), name: 'Contact' },
-    { color: new THREE.Color('#CCCCCC'), name: 'Home' }, // New "Home" layer
+    { color: new THREE.Color('#CCCCCC'), name: 'Home' },
   ],
 };
 
@@ -208,7 +208,7 @@ const ThreeScene = ({ setActivePage }) => {
                     if (labelAnchor && labelAnchor.children[0]) {
                         const label = labelAnchor.children[0];
                         const targetLabelScale = isHovered ? 1 : 0.8;
-                        const currentScale = label.element.style.transform ? parseFloat(label.element.style.transform.replace('scale(','')) : 1;
+                        const currentScale = label.element.style.transform ? parseFloat(label.element.style.transform.replace('scale(','').replace(')','')) : 1;
                         label.element.style.opacity = lerp(parseFloat(label.element.style.opacity), isHovered ? 1 : 0, 0.2);
                         label.element.style.transform = `scale(${lerp(currentScale, targetLabelScale, 0.2)})`;
                     }
@@ -270,7 +270,7 @@ export default function App() {
     return (
         <div className="font-sans bg-gray-900 min-h-screen text-white flex flex-col items-center relative overflow-x-hidden">
             <style>{`
-              @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+              @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
               .font-sans { font-family: 'Inter', sans-serif; }
               .label {
                 font-family: 'Inter', sans-serif;
